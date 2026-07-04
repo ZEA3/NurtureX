@@ -39,7 +39,7 @@ const MONTHS   = ['January','February','March','April','May','June',
                   'July','August','September','October','November','December']
 
 const EMPTY_FORM = {
-  patient_id: '', infant_id: '',
+  parent_id: '', patient_id: '', infant_id: '',
   scheduled_at: '', duration_min: 30,
   appt_type: 'checkup', status: 'scheduled',
   location: '', notes: '',
@@ -84,11 +84,7 @@ export default function DoctorAppointments() {
     try {
       const data = await appointmentService.listForMonth({ doctorId: user.id, year, month })
       setItems(data)
-      setPendingCount(data.filter(a =>
-        a.status === 'scheduled' &&
-        new Date(a.scheduled_at) > new Date() &&
-        (a.notes ?? '').includes('parent_id:')
-      ).length)
+      setPendingCount(data.filter(a => a.status === 'pending').length)
     } catch (err) {
       toast.error(err.message ?? 'Could not load appointments')
     } finally {
@@ -123,10 +119,7 @@ export default function DoctorAppointments() {
                 const next = [...prev, appt].sort(
                   (a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)
                 )
-                setPendingCount(next.filter(a =>
-                  a.status === 'scheduled' && new Date(a.scheduled_at) > new Date() &&
-                  (a.notes ?? '').includes('parent_id:')
-                ).length)
+                setPendingCount(next.filter(a => a.status === 'pending').length)
                 return next
               })
               toast.success('📅 New appointment request received!')
@@ -161,9 +154,24 @@ export default function DoctorAppointments() {
     setModalOpen(true)
   }
 
+  // Day-detail modal: clicking a calendar day lists that day's appointments.
+  const [dayModal, setDayModal] = useState(null) // { date, items } | null
+  const openDay = (date) => {
+    const k = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`
+    const dayItems = items
+      .filter(a => {
+        const d = new Date(a.scheduled_at)
+        const dk = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+        return dk === k
+      })
+      .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))
+    setDayModal({ date, items: dayItems })
+  }
+
   const openEdit = (appt) => {
     setEditing(appt)
     setForm({
+      parent_id:    appt.parent_id   ?? '',
       patient_id:   appt.patient_id  ?? '',
       infant_id:    appt.infant_id   ?? '',
       scheduled_at: toLocalDatetime(new Date(appt.scheduled_at)),
@@ -172,6 +180,9 @@ export default function DoctorAppointments() {
       status:       appt.status      ?? 'scheduled',
       location:     appt.location    ?? '',
       notes:        appt.notes       ?? '',
+      // read-only context for display
+      _parent:      appt.parent      ?? null,
+      _infant:      appt.infant      ?? null,
     })
     setFormError('')
     setModalOpen(true)
@@ -192,15 +203,36 @@ export default function DoctorAppointments() {
 
   const submit = async (e) => {
     e.preventDefault(); setFormError('')
-    if (!form.scheduled_at) return setFormError('Pick a date and time.')
+
+    // ── Frontend validation (mirrors the service-side guard) ──────────
+    if (!form.scheduled_at) {
+      return setFormError('Please choose a date and time.')
+    }
+    const when = new Date(form.scheduled_at)
+    if (Number.isNaN(when.getTime())) {
+      return setFormError('The date and time you entered is invalid.')
+    }
+    // Only block past times when creating (editing an old appt is allowed).
+    if (!editing && when.getTime() < Date.now()) {
+      return setFormError('You cannot book an appointment in the past.')
+    }
+    if (!form.parent_id && !form.patient_id) {
+      return setFormError('Please select a patient for the appointment.')
+    }
+    if (!form.appt_type) {
+      return setFormError('Please choose an appointment type.')
+    }
+
     setSaving(true)
     try {
+      const { _parent, _infant, ...formData } = form
       const payload = {
-        ...form,
+        ...formData,
         doctor_id:    user.id,
+        parent_id:    form.parent_id  || null,
         patient_id:   form.patient_id || null,
         infant_id:    form.infant_id  || null,
-        scheduled_at: new Date(form.scheduled_at).toISOString(),
+        scheduled_at: when.toISOString(),
         duration_min: Number(form.duration_min) || 30,
       }
       if (editing) {
@@ -257,11 +289,7 @@ export default function DoctorAppointments() {
   const goNext = () => { if (month === 12) { setMonth(1); setYear(y => y + 1) } else setMonth(m => m + 1) }
 
   // ── Pending requests panel ────────────────────────────────────────
-  const pendingItems = items.filter(a =>
-    a.status === 'scheduled' &&
-    new Date(a.scheduled_at) > new Date() &&
-    (a.notes ?? '').includes('parent_id:')
-  )
+  const pendingItems = items.filter(a => a.status === 'pending')
 
   return (
     <>
@@ -325,7 +353,7 @@ export default function DoctorAppointments() {
                         {a.appt_type?.replace('_', ' ')}
                       </span>
                       <span className="text-sm font-semibold text-slate-900 dark:text-white">
-                        {a.infant?.name || a.patient?.full_name || 'Patient'}
+                        {a.patient?.full_name || a.parent?.full_name || a.infant?.name || 'Patient'}
                       </span>
                     </div>
                     <div className="text-xs text-slate-500 dark:text-zinc-500 mt-0.5 flex items-center gap-3">
@@ -343,13 +371,13 @@ export default function DoctorAppointments() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
-                      onClick={() => quickStatus(a.id, 'completed', 'accepted')}
+                      onClick={() => quickStatus(a.id, 'scheduled', 'accepted')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold transition"
                     >
                       <CheckCircle2 size={13} /> Accept
                     </button>
                     <button
-                      onClick={() => quickStatus(a.id, 'canceled', 'rejected')}
+                      onClick={() => quickStatus(a.id, 'rejected', 'rejected')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition"
                     >
                       <XCircle size={13} /> Reject
@@ -388,9 +416,55 @@ export default function DoctorAppointments() {
       </div>
 
       {view === 'calendar'
-        ? <CalendarGrid year={year} month={month} today={today} loading={loading} items={items} onAddDay={openCreate} onEditAppt={openEdit} />
+        ? <CalendarGrid year={year} month={month} today={today} loading={loading} items={items} onAddDay={openDay} onEditAppt={openEdit} />
         : <ListView loading={loading} items={items} onEditAppt={openEdit} onQuickStatus={quickStatus} />
       }
+
+      {/* Day appointments list modal */}
+      <Modal
+        open={!!dayModal}
+        onClose={() => setDayModal(null)}
+        title={dayModal ? dayModal.date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : ''}
+        footer={
+          <div className="flex items-center gap-2 w-full">
+            <Button variant="secondary" onClick={() => setDayModal(null)} type="button" className="ml-auto">Close</Button>
+            <Button type="button" onClick={() => { const d = dayModal.date; setDayModal(null); openCreate(d) }}>
+              <Plus size={13} /> Add appointment
+            </Button>
+          </div>
+        }
+      >
+        {dayModal && dayModal.items.length === 0 ? (
+          <p className="text-sm text-slate-500 dark:text-zinc-500 py-6 text-center">
+            No appointments on this day.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-100 dark:divide-zinc-800">
+            {dayModal?.items.map(a => {
+              const time = new Date(a.scheduled_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              const who = a.infant?.name || a.parent?.full_name || 'Patient'
+              return (
+                <li key={a.id}>
+                  <button
+                    onClick={() => { setDayModal(null); openEdit(a) }}
+                    className="w-full flex items-center gap-3 py-3 px-1 hover:bg-slate-50 dark:hover:bg-zinc-800/50 rounded-lg transition text-left"
+                  >
+                    <div className="text-xs font-bold text-slate-500 dark:text-zinc-400 w-16 shrink-0">{time}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">{who}</div>
+                      <div className="text-xs text-slate-500 dark:text-zinc-500 capitalize">
+                        {(a.appt_type ?? 'checkup').replace('_', ' ')}
+                        {a.parent?.full_name && a.infant?.name ? ` · parent: ${a.parent.full_name}` : ''}
+                      </div>
+                    </div>
+                    <StatusBadge status={a.status} />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </Modal>
 
       {/* Modal */}
       <Modal
@@ -416,9 +490,28 @@ export default function DoctorAppointments() {
             </div>
           )}
 
+          {editing && (form._parent || form._infant) && (
+            <div className="rounded-xl bg-brand-50 dark:bg-zinc-800/60 border border-brand-100 dark:border-zinc-700 p-3 text-sm">
+              <p className="text-xs font-bold uppercase tracking-wider text-brand-700 dark:text-brand-300 mb-1.5">
+                Request details
+              </p>
+              {form._parent && (
+                <p className="text-slate-700 dark:text-zinc-200">
+                  <span className="font-semibold">Parent:</span> {form._parent.full_name ?? '—'}
+                  {form._parent.phone ? `  ·  ${form._parent.phone}` : ''}
+                </p>
+              )}
+              {form._infant && (
+                <p className="text-slate-700 dark:text-zinc-200">
+                  <span className="font-semibold">Baby:</span> {form._infant.name ?? '—'}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <Field label="Patient (parent)">
-              <Select value={form.patient_id} onChange={e => setForm(f => ({ ...f, patient_id: e.target.value }))} disabled={saving}>
+              <Select value={form.parent_id} onChange={e => setForm(f => ({ ...f, parent_id: e.target.value }))} disabled={saving}>
                 <option value="">— Unassigned —</option>
                 {patients.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
               </Select>
@@ -433,7 +526,7 @@ export default function DoctorAppointments() {
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Date & time" required>
-              <Input type="datetime-local" value={form.scheduled_at} onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))} disabled={saving} required />
+              <Input type="datetime-local" value={form.scheduled_at} min={editing ? undefined : toLocalDatetime(new Date())} onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))} disabled={saving} required />
             </Field>
             <Field label="Duration (min)">
               <Input type="number" min={5} step={5} value={form.duration_min} onChange={e => setForm(f => ({ ...f, duration_min: e.target.value }))} disabled={saving} />
@@ -452,9 +545,11 @@ export default function DoctorAppointments() {
             </Field>
             <Field label="Status">
               <Select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} disabled={saving}>
+                <option value="pending">Pending request</option>
                 <option value="scheduled">Scheduled</option>
                 <option value="completed">Completed</option>
                 <option value="canceled">Canceled</option>
+                <option value="rejected">Rejected</option>
                 <option value="no_show">No-show</option>
               </Select>
             </Field>
@@ -539,7 +634,7 @@ function CalendarGrid({ year, month, today, loading, items, onAddDay, onEditAppt
             const dayItems = byDay.get(k) ?? []
             const muted    = !inMonth(d)
             const todayCell = isToday(d)
-            const hasPending = dayItems.some(a => a.status === 'scheduled' && (a.notes ?? '').includes('parent_id:'))
+            const hasPending = dayItems.some(a => a.status === 'pending')
             return (
               <div key={i} onClick={() => onAddDay(d)}
                 className={cn('group min-h-[88px] sm:min-h-[112px] bg-white dark:bg-zinc-900 p-1.5 cursor-pointer transition',
@@ -572,7 +667,7 @@ function CalendarGrid({ year, month, today, loading, items, onAddDay, onEditAppt
                         title={`${time} — ${a.appt_type}`}
                       >
                         <span className="hidden sm:inline">{time} </span>
-                        {a.infant?.name ?? a.patient?.full_name ?? a.appt_type}
+                        {a.patient?.full_name ?? a.parent?.full_name ?? a.infant?.name ?? a.appt_type}
                       </button>
                     )
                   })}
@@ -598,7 +693,7 @@ function ListView({ loading, items, onEditAppt, onQuickStatus }) {
     <ul className="space-y-2">
       {items.map(a => {
         const dt = new Date(a.scheduled_at)
-        const isPending = a.status === 'scheduled' && dt > new Date() && (a.notes ?? '').includes('parent_id:')
+        const isPending = a.status === 'pending'
         const notesClean = (a.notes ?? '').replace(/parent_id:[a-z0-9-]+\s*\|?\s*/g, '').trim()
         return (
           <li key={a.id} className={cn('rounded-xl bg-white dark:bg-zinc-900 border p-4 transition',
@@ -631,7 +726,7 @@ function ListView({ loading, items, onEditAppt, onQuickStatus }) {
                   )}
                 </div>
                 <div className="font-semibold text-slate-900 dark:text-white truncate">
-                  {a.infant?.name || a.patient?.full_name || 'Unassigned'}
+                  {a.patient?.full_name || a.parent?.full_name || a.infant?.name || 'Unassigned'}
                 </div>
                 <div className="text-xs text-slate-500 dark:text-zinc-500 flex items-center gap-3 flex-wrap mt-0.5">
                   <span className="inline-flex items-center gap-1"><Clock size={11} /> {a.duration_min ?? 30} min</span>

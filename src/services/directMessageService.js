@@ -119,6 +119,56 @@ export const directMessageService = {
     return data
   },
 
+  /**
+   * Upload a file to the chat-attachments bucket and send it as a message.
+   * Content is encoded as "[[img]]<url>|<name>" or "[[file]]<url>|<name>"
+   * so both the dashboard and the Flutter app render it consistently.
+   *
+   * @param {Object} o
+   * @param {string} o.conversationId
+   * @param {string} o.senderId
+   * @param {File}   o.file              the File/Blob to upload
+   * @param {(pct:number)=>void} [o.onProgress]  0..100 (best-effort)
+   */
+  async sendAttachment({ conversationId, senderId, file, onProgress }) {
+    if (!file) throw new Error('No file selected.')
+    const isImage = (file.type || '').startsWith('image/')
+    const safeName = (file.name || (isImage ? 'photo.jpg' : 'file'))
+      .replace(/[^\w.\-]+/g, '_')
+    const path = `${conversationId}/${Date.now()}_${safeName}`
+
+    // Best-effort progress: Supabase JS upload doesn't expose granular
+    // progress, so we show indeterminate-style steps around the call.
+    onProgress?.(10)
+    const { error: upErr } = await supabase.storage
+      .from('chat-attachments')
+      .upload(path, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type || 'application/octet-stream',
+      })
+    if (upErr) throw new Error(upErr.message || 'Upload failed.')
+    onProgress?.(80)
+
+    const { data: pub } = supabase.storage
+      .from('chat-attachments')
+      .getPublicUrl(path)
+    const url = pub?.publicUrl
+    if (!url) throw new Error('Could not get the file URL.')
+
+    const marker = isImage ? '[[img]]' : '[[file]]'
+    const content = `${marker}${url}|${file.name || safeName}`
+
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .insert({ conversation_id: conversationId, sender_id: senderId, content })
+      .select(MSG_SELECT)
+      .single()
+    if (error) throw error
+    onProgress?.(100)
+    return data
+  },
+
   /** Mark all messages from the other party as read. */
   async markRead({ conversationId, myId }) {
     const { error } = await supabase
@@ -128,6 +178,13 @@ export const directMessageService = {
       .neq('sender_id', myId)
       .is('read_at', null)
     if (error) console.warn('markRead error (non-critical):', error.message)
+    // Notify the notification hook to refresh its unread counts immediately,
+    // without relying on realtime UPDATE replication being enabled.
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('nx:messages-read', {
+        detail: { conversationId },
+      }))
+    }
   },
 
   /** Total unread across all conversations for a doctor. */

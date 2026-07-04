@@ -20,23 +20,39 @@ export default function Modal({
   hideClose = false,
 }) {
   const dialogRef = useRef(null)
+  const focusedOnceRef = useRef(false)
 
+  // Keep the latest onClose in a ref so the ESC handler always calls the
+  // current one without needing onClose in the effect's dependency array.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // Lock body scroll + ESC to close. Re-runs only when `open` changes, not on
+  // every parent re-render (which would otherwise re-trigger autofocus and
+  // steal focus from the field you're typing in).
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      focusedOnceRef.current = false
+      return
+    }
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    const onKey = (e) => e.key === 'Escape' && onClose?.()
+    const onKey = (e) => e.key === 'Escape' && onCloseRef.current?.()
     document.addEventListener('keydown', onKey)
-    // approximate focus trap
-    setTimeout(() => {
-      const el = dialogRef.current?.querySelector('input, button, textarea, select, [tabindex]:not([tabindex="-1"])')
-      el?.focus()
-    }, 0)
+    // Autofocus the first field ONCE, only when the modal first opens.
+    if (!focusedOnceRef.current) {
+      focusedOnceRef.current = true
+      setTimeout(() => {
+        const el = dialogRef.current?.querySelector(
+          'input, button, textarea, select, [tabindex]:not([tabindex="-1"])')
+        el?.focus()
+      }, 0)
+    }
     return () => {
       document.body.style.overflow = prev
       document.removeEventListener('keydown', onKey)
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

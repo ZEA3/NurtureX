@@ -6,7 +6,7 @@ import { supabase } from '../supabaseClient'
 
 const SELECT = `
   *,
-  patient:patient_id(id, full_name),
+  parent:parent_id(id, full_name, phone),
   infant:infant_id(id, name),
   doctor:doctor_id(id, full_name)
 `
@@ -34,7 +34,7 @@ export const appointmentService = {
       .order('scheduled_at', { ascending: true })
 
     if (doctorId)              q = q.eq('doctor_id', doctorId)
-    if (patientId)             q = q.eq('patient_id', patientId)
+    if (patientId)             q = q.eq('parent_id', patientId)
     if (infantId)              q = q.eq('infant_id', infantId)
     if (status !== 'all')      q = q.eq('status', status)
     if (from)                  q = q.gte('scheduled_at', from)
@@ -76,11 +76,45 @@ export const appointmentService = {
   },
 
   async create(input) {
+    // ── Validation (server-side guard; UI also validates) ──────────────
+    // Required: a scheduled date/time.
+    if (!input.scheduled_at) {
+      throw new Error('Please choose a date and time for the appointment.')
+    }
+    const when = new Date(input.scheduled_at)
+    if (Number.isNaN(when.getTime())) {
+      throw new Error('The appointment date/time is invalid.')
+    }
+    // No past appointments (covers past dates AND today with a past time).
+    if (when.getTime() < Date.now()) {
+      throw new Error('You cannot book an appointment in the past.')
+    }
+
+    const doctorId = input.doctor_id ?? null
+    const parentId = input.parent_id ?? input.patient_id ?? null
+
+    // Prevent duplicate: same doctor + same exact time, not canceled.
+    if (doctorId) {
+      const { data: clash, error: clashErr } = await supabase
+        .from('appointments')
+        .select('id')
+        .eq('doctor_id', doctorId)
+        .eq('scheduled_at', when.toISOString())
+        .neq('status', 'canceled')
+        .limit(1)
+      if (clashErr) throw clashErr
+      if (clash && clash.length > 0) {
+        throw new Error(
+          'An appointment already exists for this date and time. Please choose another slot.'
+        )
+      }
+    }
+
     const row = {
-      doctor_id:    input.doctor_id ?? null,
-      patient_id:   input.patient_id ?? null,
+      doctor_id:    doctorId,
+      parent_id:    parentId,
       infant_id:    input.infant_id ?? null,
-      scheduled_at: input.scheduled_at,
+      scheduled_at: when.toISOString(),
       duration_min: input.duration_min ? Number(input.duration_min) : 30,
       appt_type:    input.appt_type ?? 'checkup',
       status:       input.status ?? 'scheduled',
@@ -94,7 +128,7 @@ export const appointmentService = {
   },
 
   async update(id, patch) {
-    const allowed = ['patient_id','infant_id','scheduled_at','duration_min','appt_type','status','location','notes']
+    const allowed = ['parent_id','infant_id','scheduled_at','duration_min','appt_type','status','location','notes']
     const cleaned = Object.fromEntries(
       Object.entries(patch).filter(([k]) => allowed.includes(k))
     )
@@ -102,6 +136,11 @@ export const appointmentService = {
       .from('appointments').update(cleaned).eq('id', id).select(SELECT).single()
     if (error) throw error
     return data
+  },
+
+  // Alias for setStatus
+  async updateStatus(id, status) {
+    return this.setStatus(id, status)
   },
 
   async setStatus(id, status) {

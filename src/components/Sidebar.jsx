@@ -5,9 +5,9 @@
 
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Stethoscope, Calendar, MessageSquare, User,
+  ClipboardList, LayoutDashboard, Stethoscope, Calendar, MessageSquare, User,
   Users, BarChart3, Building2, LogOut, Sun, Moon, X,
-  Baby, Bell, FileText, Syringe,
+  Baby, Bell, Syringe,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
@@ -32,9 +32,9 @@ const DOCTOR_NAV = [
   { to: '/doctor/infants',      icon: Baby,            label: 'Infants' },
   { to: '/doctor/appointments', icon: Calendar,        label: 'Appointments' },
   { to: '/doctor/messages',     icon: MessageSquare,   label: 'Messages' },
+  { to: '/doctor/medical-notes', icon: ClipboardList,  label: 'Medical Notes' },
   { to: '/doctor/vaccinations', icon: Syringe,         label: 'Vaccinations' },
   { to: '/doctor/alerts',       icon: Bell,            label: 'Alerts' },
-  { to: '/doctor/ai-tools',     icon: FileText,        label: 'AI Tools' },
   { to: '/doctor/profile',      icon: User,            label: 'Profile' },
 ]
 

@@ -29,12 +29,13 @@ import DoctorInfants       from './pages/doctor/DoctorInfants'
 import DoctorAppointments  from './pages/doctor/DoctorAppointments'
 import DoctorVaccinations  from './pages/doctor/DoctorVaccinations'
 import DoctorMessages      from './pages/doctor/DoctorMessages'
-import DoctorAITools       from './pages/doctor/DoctorAITools'
+import DoctorMedicalNotes from './pages/doctor/DoctorMedicalNotes'
 import DoctorProfile       from './pages/doctor/DoctorProfile'
 
 // Shared (used by both admin and doctor routes)
-import InfantDetail from './pages/shared/InfantDetail'
-import AlertsPage   from './pages/shared/AlertsPage'
+import AlertsPage         from './pages/shared/AlertsPage'
+import InfantDetail       from './pages/shared/InfantDetail'
+import PatientRecord      from './pages/shared/PatientRecord'
 
 export default function App() {
   return (
@@ -76,13 +77,14 @@ export default function App() {
         >
           <Route index                 element={<DoctorDashboard />} />
           <Route path="patients"       element={<DoctorPatients />} />
+          <Route path="patients/:id"   element={<PatientRecord />} />
           <Route path="infants"        element={<DoctorInfants />} />
           <Route path="infants/:id"    element={<InfantDetail />} />
           <Route path="appointments"   element={<DoctorAppointments />} />
           <Route path="vaccinations"   element={<DoctorVaccinations />} />
           <Route path="messages"       element={<DoctorMessages />} />
+          <Route path="medical-notes"   element={<DoctorMedicalNotes />} />
           <Route path="alerts"         element={<AlertsPage />} />
-          <Route path="ai-tools"       element={<DoctorAITools />} />
           <Route path="profile"        element={<DoctorProfile />} />
         </Route>
 

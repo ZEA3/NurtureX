@@ -9,6 +9,7 @@ import { useSearchParams } from 'react-router-dom'
 import {
   Search, Send, MessageSquare, ArrowLeft, CheckCheck, Check,
   RefreshCw, Inbox, AlertCircle, Trash2, Users,
+  Paperclip, Camera, Download, FileText, X,
 } from 'lucide-react'
 
 import { useAuth }  from '../../hooks/useAuth'
@@ -20,6 +21,71 @@ import Avatar     from '../../components/ui/Avatar'
 import Button     from '../../components/ui/Button'
 import { Skeleton } from '../../components/ui/Skeleton'
 import { cn } from '../../utils/cn'
+
+// Short preview string for the inbox list.
+function previewText(content) {
+  const t = (content ?? '').trim()
+  if (t.startsWith('[[img]]'))   return '📷 Photo'
+  if (t.startsWith('[[voice]]')) return '🎤 Voice message'
+  if (t.startsWith('[[file]]')) {
+    const m = /\|(.*)$/s.exec(t)
+    return `📎 ${m ? m[1] : 'Attachment'}`
+  }
+  return t
+}
+
+// Renders message content: decodes "[[img]]url|name" and "[[file]]url|name"
+// into an inline image or a downloadable file card. Plain text passes through.
+function MessageContent({ content, isMe }) {
+  const m = /^\[\[(img|file|voice)\]\](.*?)\|(.*)$/s.exec(content ?? '')
+  if (!m) {
+    return <div className="whitespace-pre-wrap break-words">{content}</div>
+  }
+  const kind = m[1]
+  const url  = m[2]
+  const name = m[3] || 'attachment'
+
+  if (kind === 'img') {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block">
+        <img
+          src={url}
+          alt={name}
+          className="rounded-lg max-w-[220px] max-h-[260px] object-cover"
+          loading="lazy"
+        />
+      </a>
+    )
+  }
+
+  if (kind === 'voice') {
+    return <audio controls src={url} className="max-w-[220px]" />
+  }
+
+  // file card
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      download={name}
+      className={cn(
+        'flex items-center gap-2.5 rounded-lg px-2.5 py-2 min-w-[180px] max-w-[240px] transition',
+        isMe ? 'bg-white/15 hover:bg-white/25' : 'bg-slate-100 dark:bg-zinc-700 hover:bg-slate-200 dark:hover:bg-zinc-600',
+      )}
+    >
+      <span className={cn('w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0',
+        isMe ? 'bg-white/20' : 'bg-white dark:bg-zinc-800')}>
+        <FileText size={16} />
+      </span>
+      <span className="flex-1 min-w-0">
+        <span className="block truncate text-xs font-semibold">{name}</span>
+        <span className="block text-[10px] opacity-70">Tap to download</span>
+      </span>
+      <Download size={14} className="flex-shrink-0 opacity-80" />
+    </a>
+  )
+}
 
 export default function DoctorMessages() {
   const { user } = useAuth()
@@ -37,10 +103,13 @@ export default function DoctorMessages() {
   const [loadingMsgs,      setLoadingMsgs]      = useState(false)
   const [draft,            setDraft]            = useState('')
   const [sending,          setSending]          = useState(false)
+  const [uploadPct,        setUploadPct]        = useState(0)   // 0 = idle
+  const [cameraOpen,       setCameraOpen]       = useState(false)
 
   const messagesEndRef = useRef(null)
   const realtimeRef    = useRef(null)    // current message subscription
   const convsRealtimeRef = useRef(null)  // conversation subscription
+  const fileInputRef   = useRef(null)
 
   // ── Load conversation list ───────────────────────────────────────
   const loadConversations = useCallback(async () => {
@@ -94,9 +163,15 @@ export default function DoctorMessages() {
         if (cancelled) return
         setMessages(msgs)
 
-        // Mark as read
+        // Mark as read — clear the inbox badge instantly.
+        setConversations(prev =>
+          prev.map(c => c.id === activeConvId ? { ...c, unread: 0 } : c))
         await directMessageService.markRead({ conversationId: activeConvId, myId: user.id })
-        loadConversations() // refresh unread counts
+        // Re-sync only if markRead truly cleared them server-side. If RLS
+        // blocked it, listConversations would re-report the old count and
+        // overwrite our optimistic 0, so we keep the local 0 and let the
+        // next natural refresh reconcile. (Run FIX_markread_rls.sql so the
+        // server-side update actually succeeds.)
       } catch (err) {
         if (!cancelled) toast.error(err.message ?? 'Could not load messages')
       } finally {
@@ -178,6 +253,39 @@ export default function DoctorMessages() {
     } finally {
       setSending(false)
     }
+  }
+
+  // ── Send an attachment (file picker or camera) ────────────────────
+  const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
+  const sendFile = async (file) => {
+    if (!file || !activeConvId || sending) return
+    if (file.size > MAX_BYTES) {
+      toast.error('File is too large (max 25 MB).')
+      return
+    }
+    setSending(true)
+    setUploadPct(5)
+    try {
+      const saved = await directMessageService.sendAttachment({
+        conversationId: activeConvId,
+        senderId:       user.id,
+        file,
+        onProgress:     (p) => setUploadPct(p),
+      })
+      setMessages(prev => [...prev, saved])
+      loadConversations()
+    } catch (err) {
+      toast.error(err.message ?? 'Could not send attachment')
+    } finally {
+      setSending(false)
+      setUploadPct(0)
+    }
+  }
+
+  const onPickFile = (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking same file
+    if (file) sendFile(file)
   }
 
   const deleteMessage = async (id) => {
@@ -298,7 +406,7 @@ export default function DoctorMessages() {
                                   ? 'text-slate-700 dark:text-zinc-300 font-semibold'
                                   : 'text-slate-400 dark:text-zinc-500',
                               )}>
-                                {isMyMsg ? 'You: ' : ''}{lastMsg.content}
+                                {isMyMsg ? 'You: ' : ''}{previewText(lastMsg.content)}
                               </p>
                             </div>
                           )}
@@ -390,7 +498,7 @@ export default function DoctorMessages() {
                                 : 'bg-white dark:bg-zinc-800 text-slate-900 dark:text-white border border-slate-200 dark:border-zinc-700 rounded-bl-sm',
                               isOptimistic && 'opacity-70',
                             )}>
-                              <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                              <MessageContent content={m.content} isMe={isMe} />
                               <div className={cn(
                                 'text-[10px] mt-1 flex items-center gap-1',
                                 isMe
@@ -428,26 +536,72 @@ export default function DoctorMessages() {
               {/* Composer */}
               <form
                 onSubmit={sendMessage}
-                className="p-3 border-t border-slate-200 dark:border-zinc-800 flex items-end gap-2"
+                className="p-3 border-t border-slate-200 dark:border-zinc-800"
               >
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      sendMessage()
-                    }
-                  }}
-                  placeholder="Type a message… (Enter to send)"
-                  rows={1}
-                  disabled={sending}
-                  className="flex-1 resize-none px-3.5 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-zinc-800 text-slate-900 dark:text-white border border-slate-200 dark:border-zinc-700 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none max-h-32"
-                />
-                <Button type="submit" loading={sending} disabled={!draft.trim() || sending}>
-                  {!sending && <><Send size={14} /> Send</>}
-                </Button>
+                {uploadPct > 0 && (
+                  <div className="mb-2">
+                    <div className="h-1.5 rounded-full bg-slate-200 dark:bg-zinc-700 overflow-hidden">
+                      <div className="h-full bg-brand-500 transition-all duration-300"
+                        style={{ width: `${uploadPct}%` }} />
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-1">Uploading… {uploadPct}%</div>
+                  </div>
+                )}
+                <div className="flex items-end gap-2">
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    accept="image/*,application/pdf,.doc,.docx,.txt,.zip,.xls,.xlsx,.ppt,.pptx"
+                    onChange={onPickFile}
+                  />
+                  {/* Attach file */}
+                  <button
+                    type="button"
+                    title="Attach file"
+                    disabled={sending}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+                  >
+                    <Paperclip size={18} />
+                  </button>
+                  {/* Camera */}
+                  <button
+                    type="button"
+                    title="Take a photo"
+                    disabled={sending}
+                    onClick={() => setCameraOpen(true)}
+                    className="p-2.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+                  >
+                    <Camera size={18} />
+                  </button>
+                  <textarea
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        sendMessage()
+                      }
+                    }}
+                    placeholder="Type a message… (Enter to send)"
+                    rows={1}
+                    disabled={sending}
+                    className="flex-1 resize-none px-3.5 py-2.5 rounded-lg text-sm bg-slate-50 dark:bg-zinc-800 text-slate-900 dark:text-white border border-slate-200 dark:border-zinc-700 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none max-h-32"
+                  />
+                  <Button type="submit" loading={sending} disabled={!draft.trim() || sending}>
+                    {!sending && <><Send size={14} /> Send</>}
+                  </Button>
+                </div>
               </form>
+
+              {cameraOpen && (
+                <CameraCapture
+                  onClose={() => setCameraOpen(false)}
+                  onCapture={(file) => { setCameraOpen(false); sendFile(file) }}
+                />
+              )}
             </>
           )}
         </section>
@@ -479,4 +633,94 @@ function timeAgo(iso) {
   if (s < 86400)     return `${Math.floor(s / 3600)}h`
   if (s < 7 * 86400) return `${Math.floor(s / 86400)}d`
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// ── Camera capture modal ─────────────────────────────────────────────
+// Desktop: opens the webcam via getUserMedia. After capture, shows a
+// preview with Retake / Send. Cancel closes without sending.
+function CameraCapture({ onClose, onCapture }) {
+  const videoRef  = useRef(null)
+  const streamRef = useRef(null)
+  const [shot, setShot]   = useState(null)   // dataURL of captured frame
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' }, audio: false,
+        })
+        if (!active) { stream.getTracks().forEach(t => t.stop()); return }
+        streamRef.current = stream
+        if (videoRef.current) videoRef.current.srcObject = stream
+      } catch (e) {
+        setError('Could not access the camera. Check browser permissions.')
+      }
+    })()
+    return () => {
+      active = false
+      streamRef.current?.getTracks().forEach(t => t.stop())
+    }
+  }, [])
+
+  const takeShot = () => {
+    const video = videoRef.current
+    if (!video) return
+    const canvas = document.createElement('canvas')
+    canvas.width  = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0)
+    setShot(canvas.toDataURL('image/jpeg', 0.9))
+  }
+
+  const confirm = () => {
+    if (!shot) return
+    // dataURL -> File
+    const arr = shot.split(',')
+    const bstr = atob(arr[1])
+    const u8 = new Uint8Array(bstr.length)
+    for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i)
+    const file = new File([u8], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' })
+    onCapture(file)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl overflow-hidden w-full max-w-md">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
+          <span className="text-sm font-bold text-slate-900 dark:text-white">Take a photo</span>
+          <button onClick={onClose} className="p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="bg-black aspect-video flex items-center justify-center">
+          {error ? (
+            <div className="text-center text-white/80 text-sm px-6 py-10">{error}</div>
+          ) : shot ? (
+            <img src={shot} alt="preview" className="w-full h-full object-contain" />
+          ) : (
+            <video ref={videoRef} autoPlay playsInline className="w-full h-full object-contain" />
+          )}
+        </div>
+
+        <div className="flex items-center justify-center gap-3 px-4 py-3">
+          {error ? (
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+          ) : shot ? (
+            <>
+              <Button variant="secondary" onClick={() => setShot(null)}>Retake</Button>
+              <Button onClick={confirm}><Send size={14} /> Send</Button>
+            </>
+          ) : (
+            <>
+              <Button variant="secondary" onClick={onClose}>Cancel</Button>
+              <Button onClick={takeShot}><Camera size={14} /> Capture</Button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
